@@ -266,6 +266,19 @@
     text-transform: uppercase;
   }
 
+  .config-warning{
+    margin: 0 20px 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(224,92,122,0.12);
+    border: 1px solid rgba(224,92,122,0.4);
+    color: var(--danger);
+    font-size: 10.5px;
+    line-height: 1.5;
+    display:none;
+  }
+  .config-warning.show{ display:block; }
+
   .footer{
     padding: 12px 32px 26px;
     text-align:center;
@@ -286,6 +299,10 @@
       <div class="eyebrow">GYPSY EDITION</div>
       <div class="title">ЦЫГАНСКИЙ<br><span>ЛЕМОН ЛИСТ</span></div>
       <div class="subtitle" id="subtitle">РЕЙТИНГ УРОВНЕЙ</div>
+    </div>
+
+    <div class="config-warning" id="configWarning">
+      ⚠ JSONBin не настроен. Открой файл, найди JSONBIN_API_KEY и JSONBIN_BIN_ID в &lt;script&gt; и вставь свои значения с jsonbin.io.
     </div>
 
     <div class="list" id="list"></div>
@@ -325,7 +342,21 @@
 </div>
 
 <script>
-const STORAGE_KEY = 'gypsy-lemon-list-levels';
+/* =========================================================
+   JSONBIN.IO CONFIG — ЗАПОЛНИ ЭТИ ДВЕ СТРОКИ
+   1. Зарегистрируйся на https://jsonbin.io (бесплатно)
+   2. В личном кабинете открой "API Keys" и скопируй свой
+      X-Master-Key -> вставь в JSONBIN_API_KEY
+   3. Создай новый Bin с содержимым {"levels": []} и скопируй
+      его Bin ID (виден в URL / в списке бинов) -> JSONBIN_BIN_ID
+   ========================================================= */
+const JSONBIN_API_KEY = '$2a$10$9k0bberZM02/WyIMp.D7yu3uWuXKDc3/kKlSRnm7UG5DpDOSYQiQi';
+const JSONBIN_BIN_ID  = '6a47fb0ff5f4af5e295b9887';
+
+const JSONBIN_BASE = 'https://api.jsonbin.io/v3/b';
+const isConfigured = () =>
+  JSONBIN_API_KEY && JSONBIN_API_KEY.indexOf('ВСТАВЬ_') === -1 &&
+  JSONBIN_BIN_ID && JSONBIN_BIN_ID.indexOf('ВСТАВЬ_') === -1;
 
 const DEFAULT_LEVELS = [
   { name: 'Penumbra', verifier: 'muwa1t', extra: '', points: 1000 },
@@ -353,20 +384,33 @@ function escapeHtml(str){
 }
 
 async function loadLevels(){
-  try{
-    if(window.storage && typeof window.storage.get === 'function'){
-      const res = await window.storage.get(STORAGE_KEY, true);
-      if(res && res.value){
-        levels = withIds(JSON.parse(res.value));
-        setStatus('Загружено');
-        return;
-      }
-    }
-  }catch(e){
-    console.warn('Storage load fell back to defaults:', e);
+  if(!isConfigured()){
+    document.getElementById('configWarning').classList.add('show');
+    levels = withIds(DEFAULT_LEVELS);
+    setStatus('Исходный список (JSONBin не настроен)');
+    return;
   }
-  levels = withIds(DEFAULT_LEVELS);
-  setStatus('Исходный список');
+  try{
+    const res = await fetch(`${JSONBIN_BASE}/${JSONBIN_BIN_ID}/latest`, {
+      method: 'GET',
+      headers: { 'X-Master-Key': JSONBIN_API_KEY }
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const record = data && data.record;
+    if(record && Array.isArray(record.levels) && record.levels.length){
+      levels = withIds(record.levels);
+      setStatus('Загружено из JSONBin');
+      return;
+    }
+    // bin exists but is empty — seed it with defaults
+    levels = withIds(DEFAULT_LEVELS);
+    setStatus('Исходный список');
+  }catch(e){
+    console.warn('JSONBin load failed, falling back to defaults:', e);
+    levels = withIds(DEFAULT_LEVELS);
+    setStatus('Не удалось загрузить JSONBin — исходный список');
+  }
 }
 
 let saveTimer = null;
@@ -379,18 +423,26 @@ function saveLevels(){
 }
 
 async function doSave(){
-  if(!window.storage || typeof window.storage.set !== 'function'){
-    setStatus('Хранилище недоступно (не сохранено)');
+  if(!isConfigured()){
+    document.getElementById('configWarning').classList.add('show');
+    setStatus('JSONBin не настроен (не сохранено)');
     return;
   }
-  const payload = JSON.stringify(levels);
+  const payload = { levels };
   try{
-    const result = await window.storage.set(STORAGE_KEY, payload, true);
-    if(!result) throw new Error('empty result');
+    const res = await fetch(`${JSONBIN_BASE}/${JSONBIN_BIN_ID}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Master-Key': JSONBIN_API_KEY
+      },
+      body: JSON.stringify(payload)
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
     saveAttempt = 0;
     setStatus('Сохранено · видно всем');
   }catch(e){
-    console.error('Storage save error:', e);
+    console.error('JSONBin save error:', e);
     saveAttempt += 1;
     if(saveAttempt <= 2){
       setStatus('Повторная попытка сохранения…');
@@ -405,16 +457,6 @@ async function doSave(){
 function setStatus(text){
   document.getElementById('status').textContent = text;
 }
-
-window.addEventListener('unhandledrejection', (event) => {
-  if(String(event.reason && event.reason.message || event.reason).includes('Storage')){
-    console.error('Suppressed storage rejection:', event.reason);
-    setStatus('Проблема с хранилищем, пробую снова…');
-    event.preventDefault();
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(doSave, 800);
-  }
-});
 
 function medalFor(i){
   if(i === 0) return '🥇';
